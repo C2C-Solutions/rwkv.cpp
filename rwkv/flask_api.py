@@ -1,21 +1,18 @@
-# Provides terminal-based chat interface for RWKV model.
-# Usage: python chat_with_bot.py C:\rwkv.cpp-169M.bin
-# Prompts and code adapted from https://github.com/BlinkDL/ChatRWKV/blob/9ca4cdba90efaee25cfec21a0bae72cbd48d8acd/chat.py
-
-from flask import Flask, request, jsonify
-
-import os
 import argparse
-import pathlib
 import copy
-import torch
-import sampling
+import json
+import os
+import pathlib
+from typing import Dict, List, Optional
+
 import tokenizers
+import torch
+from flask import Flask, jsonify, request
+from flask_sock import Sock
+
 import rwkv_cpp_model
 import rwkv_cpp_shared_library
-import json
-from typing import List, Dict, Optional
-import time
+import sampling
 
 END_OF_LINE_TOKEN: int = 187
 DOUBLE_END_OF_LINE_TOKEN: int = 535
@@ -88,6 +85,7 @@ def split_last_end_of_line(tokens):
 save_thread_state("chat")
 
 app = Flask(__name__)
+sock = Sock(app)
 
 
 @app.route("/api/v1/model")
@@ -95,9 +93,9 @@ def api():
     return jsonify({"result": "rwkv"})
 
 
-@app.route("/api/v1/generate", methods=["GET", "POST"])
-def nasrat_v_otvet():
-    content = request.json
+@sock.route("/api/v1/stream")
+def generate_stream(ws):
+    content = json.loads(ws.receive())
 
     MAX_GENERATION_LENGTH: int = content["max_new_tokens"]
     TEMPERATURE: float = content["temperature"]
@@ -108,7 +106,7 @@ def nasrat_v_otvet():
     stopping = content["stopping_strings"]
 
     for i in range(len(stopping)):
-        stopping[i].replace("\n", "")
+        stopping[i] = stopping[i].replace("\n", "")
 
     prompt = content["prompt"]
 
@@ -172,7 +170,12 @@ def nasrat_v_otvet():
 
     result_string = ""
 
+    generating = True
+
     for i in range(MAX_GENERATION_LENGTH):
+        if not generating:
+            break
+
         for n in token_counts:
             logits[n] -= PRESENCE_PENALTY + token_counts[n] * FREQUENCY_PENALTY
 
@@ -198,8 +201,138 @@ def nasrat_v_otvet():
             print(decoded, end="")
             result_string += decoded
             for stopper in stopping:
-                if result_string.find(stopper) != -1:
-                    result_string.replace(stopper, "")
+                if result_string.rfind(stopper) != -1:
+                    result_string = result_string.replace(stopper, "")
+                    generating = False
+                    break
+            accumulated_tokens = []
+            ws.send({"event": "text_stream", "text": decoded})
+
+        if thread == "chat":
+            if "\n\n" in tokenizer.decode(processed_tokens[start_index:]):
+                break
+
+        if i == MAX_GENERATION_LENGTH - 1:
+            print()
+
+    save_thread_state(thread)
+
+    ws.send({"event": "stream_end"})
+
+    ws.close()
+
+
+@app.route("/api/v1/generate", methods=["GET", "POST"])
+def generate():
+    content = request.json
+
+    MAX_GENERATION_LENGTH: int = content["max_new_tokens"]
+    TEMPERATURE: float = content["temperature"]
+    TOP_P: float = content["top_p"]
+    PRESENCE_PENALTY: float = 0.5
+    FREQUENCY_PENALTY: float = 0.5
+
+    stopping = content["stopping_strings"]
+
+    for i in range(len(stopping)):
+        stopping[i] = stopping[i].replace("\n", "")
+
+    prompt = content["prompt"]
+
+    msg = prompt.replace("\\n", "\n").strip()
+
+    temperature = TEMPERATURE
+    top_p = TOP_P
+
+    if "-temp=" in msg:
+        temperature = float(msg.split("-temp=")[1].split(" ")[0])
+
+        msg = msg.replace("-temp=" + f"{temperature:g}", "")
+
+        if temperature <= 0.2:
+            temperature = 0.2
+
+        if temperature >= 5:
+            temperature = 5
+
+    if "-top_p=" in msg:
+        top_p = float(msg.split("-top_p=")[1].split(" ")[0])
+
+        msg = msg.replace("-top_p=" + f"{top_p:g}", "")
+
+        if top_p <= 0:
+            top_p = 0
+
+    # + reset --> reset chat
+    if msg == "+reset":
+        load_thread_state("chat_init")
+        save_thread_state("chat")
+        return
+    elif (
+        msg[:5].lower() == "+gen "
+        or msg[:3].lower() == "+i "
+        or msg[:4].lower() == "+qa "
+        or msg[:4].lower() == "+qq "
+        or msg.lower() == "+++"
+        or msg.lower() == "++"
+    ):
+        # ++ --> retry last free generation (only for +gen / +i)
+        if msg.lower() == "++":
+            try:
+                load_thread_state("gen_0")
+            except Exception as e:
+                print(e)
+                return
+        thread = "gen_1"
+    else:
+        load_thread_state("chat")
+        process_tokens(tokenizer.encode(prompt).ids, new_line_logit_bias=-999999999)
+        save_thread_state("chat_pre")
+
+        thread = "chat"
+
+        # Print bot response
+
+    start_index: int = len(processed_tokens)
+    accumulated_tokens: List[int] = []
+    token_counts: Dict[int, int] = {}
+
+    result_string = ""
+
+    generating = True
+
+    for i in range(MAX_GENERATION_LENGTH):
+        if not generating:
+            break
+
+        for n in token_counts:
+            logits[n] -= PRESENCE_PENALTY + token_counts[n] * FREQUENCY_PENALTY
+
+        token: int = sampling.sample_logits(logits, temperature, top_p)
+
+        if token == END_OF_TEXT_TOKEN:
+            print()
+            break
+
+        if token not in token_counts:
+            token_counts[token] = 1
+        else:
+            token_counts[token] += 1
+
+        process_tokens([token])
+
+        # Avoid UTF-8 display issues
+        accumulated_tokens += [token]
+
+        decoded: str = tokenizer.decode(accumulated_tokens)
+
+        if "\uFFFD" not in decoded:
+            print(decoded, end="")
+            result_string += decoded
+            for stopper in stopping:
+                if result_string.rfind(stopper) != -1:
+                    result_string = result_string.replace(stopper, "")
+                    generating = False
                     break
             accumulated_tokens = []
 
