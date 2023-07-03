@@ -5,6 +5,8 @@ import os
 import pathlib
 from typing import Dict, List, Optional
 
+from loguru import logger
+
 import tokenizers
 import torch
 from flask import Flask, jsonify, request
@@ -42,11 +44,13 @@ processed_tokens: List[int] = []
 logits: Optional[torch.Tensor] = None
 state: Optional[torch.Tensor] = None
 
+prev_text = ""
+prev_prev_text = ""
 
 def process_tokens(_tokens: List[int], new_line_logit_bias: float = 0.0) -> None:
     global processed_tokens, logits, state
 
-    processed_tokens = _tokens
+    processed_tokens += _tokens
 
     for _token in _tokens:
         logits, state = model.eval(_token, state, state, logits)
@@ -82,7 +86,7 @@ def split_last_end_of_line(tokens):
     return tokens
 
 
-save_thread_state("chat")
+save_thread_state("clear")
 
 app = Flask(__name__)
 sock = Sock(app)
@@ -95,6 +99,10 @@ def api():
 
 @sock.route("/api/v1/stream")
 def generate_stream(ws):
+
+    global prev_text
+    global prev_prev_text
+
     content = json.loads(ws.receive())
 
     MAX_GENERATION_LENGTH: int = content["max_new_tokens"]
@@ -105,12 +113,33 @@ def generate_stream(ws):
 
     stopping = content["stopping_strings"]
 
-    for i in range(len(stopping)):
-        stopping[i] = stopping[i].replace("\n", "")
-
     prompt = content["prompt"]
 
+    logger.info(prompt)
+
     msg = prompt.replace("\\n", "\n").strip()
+    msg_diff = msg.replace(prev_text, "")
+
+    if len(msg_diff) != (len(msg) - len(prev_text)):
+        msg_diff = msg.replace(prev_prev_text, "")
+
+        if len(msg_diff) != (len(msg) - len(prev_prev_text)):
+            logger.debug("Past message edited - recalculating whole context")
+            msg_diff = msg
+            prev_prev_text = ""
+            prev_text = ""
+            load_thread_state("clear")
+        else:
+            logger.debug("Last message edited - recalculating last message context")
+            load_thread_state("chat_prev_prev")
+            prev_text = msg
+
+    else:
+        logger.debug("New message received")
+        prev_prev_text = prev_text
+        prev_text = msg
+
+    msg = msg_diff
 
     temperature = TEMPERATURE
     top_p = TOP_P
@@ -134,35 +163,8 @@ def generate_stream(ws):
         if top_p <= 0:
             top_p = 0
 
-    # + reset --> reset chat
-    if msg == "+reset":
-        load_thread_state("chat_init")
-        save_thread_state("chat")
-        return
-    elif (
-        msg[:5].lower() == "+gen "
-        or msg[:3].lower() == "+i "
-        or msg[:4].lower() == "+qa "
-        or msg[:4].lower() == "+qq "
-        or msg.lower() == "+++"
-        or msg.lower() == "++"
-    ):
-        # ++ --> retry last free generation (only for +gen / +i)
-        if msg.lower() == "++":
-            try:
-                load_thread_state("gen_0")
-            except Exception as e:
-                print(e)
-                return
-        thread = "gen_1"
-    else:
-        load_thread_state("chat")
-        process_tokens(tokenizer.encode(prompt).ids, new_line_logit_bias=-999999999)
-        save_thread_state("chat_pre")
-
-        thread = "chat"
-
-        # Print bot response
+    save_thread_state("chat_prev_prev")
+    process_tokens(tokenizer.encode(prompt).ids, new_line_logit_bias=-999999999)
 
     start_index: int = len(processed_tokens)
     accumulated_tokens: List[int] = []
@@ -208,14 +210,11 @@ def generate_stream(ws):
             accumulated_tokens = []
             ws.send({"event": "text_stream", "text": decoded})
 
-        if thread == "chat":
-            if "\n\n" in tokenizer.decode(processed_tokens[start_index:]):
-                break
+        if "\n\n" in tokenizer.decode(processed_tokens[start_index:]):
+            break
 
         if i == MAX_GENERATION_LENGTH - 1:
             print()
-
-    save_thread_state(thread)
 
     ws.send({"event": "stream_end"})
 
