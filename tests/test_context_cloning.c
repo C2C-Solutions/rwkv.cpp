@@ -13,25 +13,25 @@ int main() {
 		return EXIT_FAILURE;
 	}
 
-	float * state = calloc(rwkv_get_state_buffer_element_count(ctx), sizeof(float));
-	float * logits = calloc(rwkv_get_logits_buffer_element_count(ctx), sizeof(float));
+	float * state = calloc(rwkv_get_state_len(ctx), sizeof(float));
+	float * logits = calloc(rwkv_get_logits_len(ctx), sizeof(float));
 
 	if (!state || !logits) {
 		fprintf(stderr, "Failed to allocate state/logits\n");
 		return EXIT_FAILURE;
 	}
 
-	// 0xd1 or 209 is space (0x20 or \u0120 in tokenizer)
-	const unsigned char * prompt = "hello\xd1world";
+	const unsigned char prompt[12] = "hello world";
 
 	rwkv_eval(ctx, prompt[0], NULL, state, logits);
 
-	for (const unsigned char * token = prompt + 1; *token != 0; token++) {
-		rwkv_eval(ctx, *token, state, state, logits);
+	for (int i = 1; prompt[i] != 0; i++) {
+		rwkv_eval(ctx, prompt[i], state, state, logits);
 	}
 
 	float * expected_logits = logits;
-	logits = calloc(rwkv_get_logits_buffer_element_count(ctx), sizeof(float));
+
+	logits = calloc(rwkv_get_logits_len(ctx), sizeof(float));
 
 	if (!logits) {
 		fprintf(stderr, "Failed to allocate state/logits\n");
@@ -42,12 +42,12 @@ int main() {
 
 	rwkv_eval(ctx, prompt[0], NULL, state, logits);
 
-	for (const unsigned char * token = prompt + 1; *token != 0; token++) {
-		rwkv_eval(ctx, *token, state, state, logits);
+	for (int i = 1; prompt[i] != 0; i++) {
+		rwkv_eval(ctx, prompt[i], state, state, logits);
 	}
 
-	if (memcmp(expected_logits, logits, rwkv_get_logits_buffer_element_count(ctx) * sizeof(float))) {
-		fprintf(stderr, "results not identical :(\n");
+	if (memcmp(expected_logits, logits, rwkv_get_logits_len(ctx) * sizeof(float))) {
+		fprintf(stderr, "Results not identical :(\n");
 		return EXIT_FAILURE;
 	} else {
 		fprintf(stdout, "Results identical, success!\n");

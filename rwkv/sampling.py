@@ -15,11 +15,14 @@ def sample_probs(probs: np.ndarray, temperature: float = 1.0, top_p: float = 0.8
     if top_p == 0.0:
         top_p = 1.0
 
-    if logit_bias is not None:
+    if logit_bias is not None and len(logit_bias) > 0:
         logits = np.log(probs)
 
-        for token in logit_bias.keys():
-            logits[token] += logit_bias[token]
+        ids, values = zip(*logit_bias.items())
+        logits[list(ids)] += values
+
+        # Makes calculation more numerically stable, does not change the result
+        logits -= logits.max(axis=-1, keepdims=True)
 
         probs = np.exp(logits) / np.sum(np.exp(logits))
 
