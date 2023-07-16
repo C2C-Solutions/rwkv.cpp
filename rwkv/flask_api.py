@@ -44,8 +44,9 @@ processed_tokens: List[int] = []
 logits: Optional[torch.Tensor] = None
 state: Optional[torch.Tensor] = None
 
-prev_text = ""
-prev_prev_text = ""
+prev = []
+prev_i = 0
+
 
 def process_tokens(_tokens: List[int], new_line_logit_bias: float = 0.0) -> None:
     global processed_tokens, logits, state
@@ -100,8 +101,10 @@ def api():
 @sock.route("/api/v1/stream")
 def generate_stream(ws):
 
-    global prev_text
-    global prev_prev_text
+    global prev_i
+    global prev
+
+    prev_i += 1
 
     content = json.loads(ws.receive())
 
@@ -115,31 +118,25 @@ def generate_stream(ws):
 
     prompt = content["prompt"]
 
-    logger.info(prompt)
-
     msg = prompt.replace("\\n", "\n").strip()
-    msg_diff = msg.replace(prev_text, "")
 
-    if len(msg_diff) != (len(msg) - len(prev_text)):
-        msg_diff = msg.replace(prev_prev_text, "")
+    found = -1
 
-        if len(msg_diff) != (len(msg) - len(prev_prev_text)):
-            logger.debug("Past message edited - recalculating whole context")
-            msg_diff = msg
-            prev_prev_text = ""
-            prev_text = ""
-            load_thread_state("clear")
-        else:
-            logger.debug("Last message edited - recalculating last message context")
-            load_thread_state("chat_prev_prev")
-            prev_text = msg
+    for i in range(0, len(prev)):
+        if msg.startswith(prev[len(prev) - i - 1]["text"]):
+            found = i
+            break
 
+    if found != -1:
+        load_thread_state(str(prev[len(prev) - found - 1]["id"]))
+        msg = msg[len(prev[len(prev) - found - 1]["text"]) :]
+        prev = prev[0 : len(prev) - found]
+        logger.debug(prev)
     else:
-        logger.debug("New message received")
-        prev_prev_text = prev_text
-        prev_text = msg
+        load_thread_state("clear")
+        prev.clear()
 
-    msg = msg_diff
+    logger.info("Processing:\n{}".format(msg))
 
     temperature = TEMPERATURE
     top_p = TOP_P
@@ -163,8 +160,10 @@ def generate_stream(ws):
         if top_p <= 0:
             top_p = 0
 
-    save_thread_state("chat_prev_prev")
-    process_tokens(tokenizer.encode(prompt).ids, new_line_logit_bias=-999999999)
+    process_tokens(tokenizer.encode(msg).ids, new_line_logit_bias=-1)
+
+    save_thread_state(str(prev_i))
+    prev.append({"text": content["prompt"], "id": prev_i})
 
     start_index: int = len(processed_tokens)
     accumulated_tokens: List[int] = []
@@ -348,4 +347,4 @@ def generate():
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=1111, debug=False)
+    app.run(host="0.0.0.0", port=5000, debug=False)
