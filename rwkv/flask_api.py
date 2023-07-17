@@ -118,12 +118,26 @@ def generate_stream(ws):
 
     prompt = content["prompt"]
 
+    logger.info(prompt)
+
     msg = prompt.replace("\\n", "\n").strip()
+
+    if len(prev) == 0:
+        logger.info("Processing new description first")
+        pos = msg.find("Then the roleplay chat between")
+        pos = msg.find("\n", pos + 1)
+        msg_setup = msg[:pos]
+        logger.info(msg_setup)
+        process_tokens(tokenizer.encode(msg_setup).ids, new_line_logit_bias=-1)
+
+        save_thread_state(str(0))
+        prev.append({"text": msg_setup, "id": 0})
 
     found = -1
 
     for i in range(0, len(prev)):
         if msg.startswith(prev[len(prev) - i - 1]["text"]):
+            logger.debug(prev[len(prev) - i - 1]["text"])
             found = i
             break
 
@@ -131,34 +145,17 @@ def generate_stream(ws):
         load_thread_state(str(prev[len(prev) - found - 1]["id"]))
         msg = msg[len(prev[len(prev) - found - 1]["text"]) :]
         prev = prev[0 : len(prev) - found]
-        logger.debug(prev)
+        # logger.debug(prev)
     else:
         load_thread_state("clear")
+        for i in prev:
+            state_by_thread.pop(str(i["id"]))
         prev.clear()
 
     logger.info("Processing:\n{}".format(msg))
 
     temperature = TEMPERATURE
     top_p = TOP_P
-
-    if "-temp=" in msg:
-        temperature = float(msg.split("-temp=")[1].split(" ")[0])
-
-        msg = msg.replace("-temp=" + f"{temperature:g}", "")
-
-        if temperature <= 0.2:
-            temperature = 0.2
-
-        if temperature >= 5:
-            temperature = 5
-
-    if "-top_p=" in msg:
-        top_p = float(msg.split("-top_p=")[1].split(" ")[0])
-
-        msg = msg.replace("-top_p=" + f"{top_p:g}", "")
-
-        if top_p <= 0:
-            top_p = 0
 
     process_tokens(tokenizer.encode(msg).ids, new_line_logit_bias=-1)
 
