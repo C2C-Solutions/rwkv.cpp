@@ -6,14 +6,12 @@ import os
 import argparse
 import pathlib
 import copy
-import torch
-import sampling
-import rwkv_cpp_model
-import rwkv_cpp_shared_library
-from rwkv_tokenizer import get_tokenizer
 import json
-from typing import List, Dict, Optional
 import time
+import sampling
+from rwkv_cpp import rwkv_cpp_shared_library, rwkv_cpp_model
+from tokenizer_util import add_tokenizer_argument, get_tokenizer
+from typing import List, Dict, Optional
 
 # ======================================== Script settings ========================================
 
@@ -42,7 +40,7 @@ END_OF_TEXT_TOKEN: int = 0
 
 parser = argparse.ArgumentParser(description='Provide terminal-based chat interface for RWKV model')
 parser.add_argument('model_path', help='Path to RWKV model in ggml format')
-parser.add_argument('tokenizer', help='Tokenizer to use; supported tokenizers: 20B, world', nargs='?', type=str, default='20B')
+add_tokenizer_argument(parser)
 args = parser.parse_args()
 
 script_dir: pathlib.Path = pathlib.Path(os.path.abspath(__file__)).parent
@@ -54,27 +52,26 @@ with open(script_dir / 'prompt' / f'{LANGUAGE}-{PROMPT_TYPE}.json', 'r', encodin
 
 assert init_prompt != '', 'Prompt must not be empty'
 
-tokenizer_decode, tokenizer_encode = get_tokenizer(args.tokenizer)
-
 library = rwkv_cpp_shared_library.load_rwkv_shared_library()
 print(f'System info: {library.rwkv_get_system_info_string()}')
 
 print('Loading RWKV model')
 model = rwkv_cpp_model.RWKVModel(library, args.model_path)
 
+tokenizer_decode, tokenizer_encode = get_tokenizer(args.tokenizer, model.n_vocab)
+
 # =================================================================================================
 
 processed_tokens: List[int] = []
-logits: Optional[torch.Tensor] = None
-state: Optional[torch.Tensor] = None
+logits: Optional[rwkv_cpp_model.NumpyArrayOrPyTorchTensor] = None
+state: Optional[rwkv_cpp_model.NumpyArrayOrPyTorchTensor] = None
 
 def process_tokens(_tokens: List[int], new_line_logit_bias: float = 0.0) -> None:
     global processed_tokens, logits, state
 
-    processed_tokens += _tokens
+    logits, state = model.eval_sequence_in_chunks(_tokens, state, state, logits, use_numpy=True)
 
-    for _token in _tokens:
-        logits, state = model.eval(_token, state, state, logits)
+    processed_tokens += _tokens
 
     logits[END_OF_LINE_TOKEN] += new_line_logit_bias
 
@@ -98,7 +95,7 @@ def load_thread_state(_thread: str) -> None:
 
 # Model only saw '\n\n' as [187, 187] before, but the tokenizer outputs [535] for it at the end.
 # See https://github.com/BlinkDL/ChatRWKV/pull/110/files
-def split_last_end_of_line(tokens):
+def split_last_end_of_line(tokens: List[int]) -> List[int]:
     if len(tokens) > 0 and tokens[-1] == DOUBLE_END_OF_LINE_TOKEN:
         tokens = tokens[:-1] + [END_OF_LINE_TOKEN, END_OF_LINE_TOKEN]
 
@@ -106,7 +103,7 @@ def split_last_end_of_line(tokens):
 
 # =================================================================================================
 
-processing_start = time.time()
+processing_start: float = time.time()
 
 prompt_tokens = tokenizer_encode(init_prompt)
 prompt_token_count = len(prompt_tokens)
@@ -114,7 +111,7 @@ print(f'Processing {prompt_token_count} prompt tokens, may take a while')
 
 process_tokens(split_last_end_of_line(prompt_tokens))
 
-processing_duration = time.time() - processing_start
+processing_duration: float = time.time() - processing_start
 
 print(f'Processed in {int(processing_duration)} s, {int(processing_duration / prompt_token_count * 1000)} ms per token')
 
@@ -125,11 +122,11 @@ print(f'\nChat initialized! Your name is {user}. Write something and press Enter
 
 while True:
     # Read user input
-    user_input = input(f'> {user}{separator} ')
-    msg = user_input.replace('\\n', '\n').strip()
+    user_input: str = input(f'> {user}{separator} ')
+    msg: str = user_input.replace('\\n', '\n').strip()
 
-    temperature = TEMPERATURE
-    top_p = TOP_P
+    temperature: float = TEMPERATURE
+    top_p: float = TOP_P
 
     if '-temp=' in msg:
         temperature = float(msg.split('-temp=')[1].split(' ')[0])

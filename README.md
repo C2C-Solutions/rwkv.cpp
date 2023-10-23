@@ -4,13 +4,15 @@ This is a port of [BlinkDL/RWKV-LM](https://github.com/BlinkDL/RWKV-LM) to [gger
 
 Besides the usual **FP32**, it supports **FP16**, **quantized INT4, INT5 and INT8** inference. This project is **focused on CPU**, but cuBLAS is also supported.
 
-This project provides [a C library rwkv.h](rwkv.h) and [a convinient Python wrapper](rwkv%2Frwkv_cpp_model.py) for it.
+This project provides [a C library rwkv.h](rwkv.h) and [a convinient Python wrapper](python%2Frwkv_cpp%2Frwkv_cpp_model.py) for it.
 
-RWKV is a novel large language model architecture, [with the largest model in the family having 14B parameters](https://huggingface.co/BlinkDL/rwkv-4-pile-14b). In contrast to Transformer with `O(n^2)` attention, RWKV requires only state from previous step to calculate logits. This makes RWKV very CPU-friendly on large context lenghts.
+[RWKV](https://arxiv.org/abs/2305.13048) is a novel large language model architecture, [with the largest model in the family having 14B parameters](https://huggingface.co/BlinkDL/rwkv-4-pile-14b). In contrast to Transformer with `O(n^2)` attention, RWKV requires only state from previous step to calculate logits. This makes RWKV very CPU-friendly on large context lenghts.
 
 Loading LoRA checkpoints in [Blealtan's format](https://github.com/Blealtan/RWKV-LM-LoRA) is supported through [merge_lora_into_ggml.py script](rwkv%2Fmerge_lora_into_ggml.py).
 
-### Quality and performance
+⚠️ **Python API was restructured on 2023-09-20**, you may need to change paths/package names in your code when updating `rwkv.cpp`.
+
+## Quality and performance
 
 If you use `rwkv.cpp` for anything serious, please [test all available formats for perplexity and latency](rwkv%2Fmeasure_pexplexity.py) on a representative dataset, and decide which trade-off is best for you.
 
@@ -26,7 +28,7 @@ Below table is for reference only. Measurements were made on 4C/8T x86 CPU with 
 | `FP16`    | **15.623**        | 117                | 2.82                 |
 | `FP32`    | **15.623**        | 198                | 5.64                 |
 
-#### With cuBLAS
+### With cuBLAS
 
 Measurements were made on Intel i7 13700K & NVIDIA 3060 Ti 8 GB. Latency per token in ms shown.
 
@@ -43,6 +45,18 @@ Measurements were made on Intel i7 13700K & NVIDIA 3060 Ti 8 GB. Latency per tok
 | `RWKV-4-Raven-7B-v11` | 32            | `Q5_1` | 77       | 69        | 67        | 72        | 101        |
 
 Note: since cuBLAS is supported only for `ggml_mul_mat()`, we still need to use few CPU resources to execute remaining operations.
+
+### With hipBLAS
+Measurements were made on CPU AMD Ryzen 9 5900X & GPU AMD Radeon RX 7900 XTX. Latency per token in ms shown.
+
+| Model                                    | Layers on GPU | Format | 1 thread | 2 threads | 4 threads | 8 threads | 24 threads |
+|------------------------------------------|---------------|--------|----------|-----------|-----------|-----------|------------|
+| `RWKV-novel-4-World-7B-20230810-ctx128k` | 32            | `f16`  | 94       | 91        | 94        | 106       | 944        |
+| `RWKV-novel-4-World-7B-20230810-ctx128k` | 32            | `Q4_0` | 83       | 77        | 75        | 110       | 1692       |
+| `RWKV-novel-4-World-7B-20230810-ctx128k` | 32            | `Q4_1` | 85       | 80        | 85        | 93        | 1691       |
+| `RWKV-novel-4-World-7B-20230810-ctx128k` | 32            | `Q5_1` | 83       | 78        | 83        | 90        | 1115       |
+
+Note: hipBLAS is same as cuBLAS.They only support `ggml_mul_mat()`, we still need to use few CPU resources to execute remaining operations.
 
 ## How to use
 
@@ -84,6 +98,10 @@ If everything went OK, `bin\Release\rwkv.dll` file should appear.
 
 Refer to [docs/cuBLAS_on_Windows.md](docs%2FcuBLAS_on_Windows.md) for a comprehensive guide.
 
+##### Windows + hipBLAS
+
+Refer to [docs/hipBLAS_on_Windows.md](docs%2FhipBLAS_on_Windows.md) for a comprehensive guide.
+
 ##### Linux / MacOS
 
 **Requirements**: CMake (Linux: `sudo apt install cmake`, MacOS: `brew install cmake`, anaconoda: [cmake package](https://anaconda.org/conda-forge/cmake)).
@@ -124,80 +142,64 @@ This option would require a little more manual work, but you can use it with any
 
 ```commandline
 # Windows
-python rwkv\convert_pytorch_to_ggml.py C:\RWKV-4-Pile-169M-20220807-8023.pth C:\rwkv.cpp-169M.bin FP16
+python python\convert_pytorch_to_ggml.py C:\RWKV-4-Pile-169M-20220807-8023.pth C:\rwkv.cpp-169M.bin FP16
 
 # Linux / MacOS
-python rwkv/convert_pytorch_to_ggml.py ~/Downloads/RWKV-4-Pile-169M-20220807-8023.pth ~/Downloads/rwkv.cpp-169M.bin FP16
+python python/convert_pytorch_to_ggml.py ~/Downloads/RWKV-4-Pile-169M-20220807-8023.pth ~/Downloads/rwkv.cpp-169M.bin FP16
 ```
 
 **Optionally**, quantize the model into one of quantized formats from the table above:
 
 ```commandline
 # Windows
-python rwkv\quantize.py C:\rwkv.cpp-169M.bin C:\rwkv.cpp-169M-Q5_1.bin Q5_1
+python python\quantize.py C:\rwkv.cpp-169M.bin C:\rwkv.cpp-169M-Q5_1.bin Q5_1
 
 # Linux / MacOS
-python rwkv/quantize.py ~/Downloads/rwkv.cpp-169M.bin ~/Downloads/rwkv.cpp-169M-Q5_1.bin Q5_1
+python python/quantize.py ~/Downloads/rwkv.cpp-169M.bin ~/Downloads/rwkv.cpp-169M-Q5_1.bin Q5_1
 ```
 
 ### 4. Run the model
 
-**Requirements**: Python 3.x with [PyTorch](https://pytorch.org/get-started/locally/) and [tokenizers](https://pypi.org/project/tokenizers/).
+#### Using the command line
 
-**Note**: change the model path with the non-quantized model for the full weights model.
+**Requirements**: Python 3.x with [numpy](https://numpy.org/). If using `Pile` or `Raven` models, [tokenizers](https://pypi.org/project/tokenizers/) is also required.
 
 To generate some text, run:
 
 ```commandline
 # Windows
-python rwkv\generate_completions.py C:\rwkv.cpp-169M-Q5_1.bin
+python python\generate_completions.py C:\rwkv.cpp-169M-Q5_1.bin
 
 # Linux / MacOS
-python rwkv/generate_completions.py ~/Downloads/rwkv.cpp-169M-Q5_1.bin
+python python/generate_completions.py ~/Downloads/rwkv.cpp-169M-Q5_1.bin
 ```
 
 To chat with a bot, run:
 
 ```commandline
 # Windows
-python rwkv\chat_with_bot.py C:\rwkv.cpp-169M-Q5_1.bin
+python python\chat_with_bot.py C:\rwkv.cpp-169M-Q5_1.bin
 
 # Linux / MacOS
-python rwkv/chat_with_bot.py ~/Downloads/rwkv.cpp-169M-Q5_1.bin
+python python/chat_with_bot.py ~/Downloads/rwkv.cpp-169M-Q5_1.bin
 ```
 
 Edit [generate_completions.py](rwkv%2Fgenerate_completions.py) or [chat_with_bot.py](rwkv%2Fchat_with_bot.py) to change prompts and sampling settings.
 
----
+#### Using in your own code
 
-Example of using `rwkv.cpp` in your custom Python script:
+The short and simple script [inference_example.py](python%2Finference_example.py) demostrates the use of `rwkv.cpp` in Python.
 
-```python
-import rwkv_cpp_model
-import rwkv_cpp_shared_library
+To use `rwkv.cpp` in C/C++, include the header [rwkv.h](rwkv.h).
 
-# Change to model paths used above (quantized or full weights) 
-model_path = r'C:\rwkv.cpp-169M.bin'
+To use `rwkv.cpp` in any other language, see [Bindings](#Bindings) section below. If your language is missing, you can try to bind to the C API using the tooling provided by your language.
 
+## Bindings
 
-model = rwkv_cpp_model.RWKVModel(
-    rwkv_cpp_shared_library.load_rwkv_shared_library(),
-    model_path,
-    thread_count=4,    #need to adjust when use cuBLAS
-    gpu_layers_count=5 #only enabled when use cuBLAS
-)
+These projects wrap `rwkv.cpp` for easier use in other languages/frameworks.
 
-logits, state = None, None
-
-for token in [1, 2, 3]:
-    logits, state = model.eval(token, state)
-
-    print(f'Output logits: {logits}')
-
-# Don't forget to free the memory after you've done working with the model
-model.free()
-
-```
+* Golang: [seasonjs/rwkv](https://github.com/seasonjs/rwkv)
+* Node.js: [Atome-FE/llama-node](https://github.com/Atome-FE/llama-node)
 
 ## Compatibility
 
